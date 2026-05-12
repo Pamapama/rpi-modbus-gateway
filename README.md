@@ -66,6 +66,14 @@ Ohne Installation listet `detect-adapters.sh` alle angesteckten USB-Seriell-Adap
 
 ```bash
 sudo ./detect-adapters.sh
+
+usb-FTDI_FT232R_USB_UART_BG03CSA8-if00-port0 -> /dev/ttyUSB0
+ID_MODEL=FT232R_USB_UART
+ID_MODEL_ID=6001
+ID_SERIAL_SHORT=BG03CSA8
+ID_VENDOR=FTDI
+ID_VENDOR_ID=0403
+
 ```
 
 ## Deinstallation
