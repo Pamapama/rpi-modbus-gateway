@@ -7,7 +7,7 @@ Er kann einen oder mehrere USB-RS485-Adapter erkennen, daraus stabile `/dev/...`
 Beispiel:
 
 ```bash
-git clone https://github.com/<user>/rpi-modbus-gateway.git
+git clone https://github.com/Pamapama/rpi-modbus-gateway.git
 cd rpi-modbus-gateway
 sudo ./install.sh
 ```
@@ -28,15 +28,14 @@ Aus einem Profil wie:
 ```yaml
 id: goodwe
 description: GoodWe Wechselrichter RS485
+defaults:
+  gateway_name: goodwe485
 mbusd:
   tcp_port: 502
   baudrate: 9600
   mode: 8N1
-  response_timeout_ms: 500
   slave_timeout_ms: 100
-usb:
-  vendor_id: "0403"
-  product_id: "6001"
+  response_timeout_ms: 500
 ```
 
 und einem Adapter mit Seriennummer `B0036RQF` wird z. B.:
@@ -59,6 +58,14 @@ Der Installer scannt automatisch:
 
 ```text
 gateways/*.yaml
+```
+
+## Adapter erkennen
+
+Ohne Installation listet `detect-adapters.sh` alle angesteckten USB-Seriell-Adapter mit ihren udev-Eigenschaften auf:
+
+```bash
+sudo ./detect-adapters.sh
 ```
 
 ## Deinstallation

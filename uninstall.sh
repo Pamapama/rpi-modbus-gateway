@@ -13,7 +13,7 @@ fi
 
 echo "Vorhandene Gateway-Configs:"
 if [[ -d "$CONFIG_DIR" ]]; then
-  find "$CONFIG_DIR" -maxdepth 1 -type f -name "*.env" -printf "  %f\n" | sed 's/.env$//'
+  find "$CONFIG_DIR" -maxdepth 1 -type f -name "*.env" | while read -r f; do echo "  $(basename "${f%.env}")"; done
 else
   echo "  keine"
 fi

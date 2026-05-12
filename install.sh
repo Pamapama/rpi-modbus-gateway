@@ -58,8 +58,10 @@ install_dependencies() {
       read -r -p "Systemd-Template auf $MBUSD_BIN anpassen? [Y/n] " ans
       ans="${ans:-Y}"
       if [[ "$ans" =~ ^[YyJj]$ ]]; then
-        sed "s#/usr/local/bin/mbusd#$MBUSD_BIN#g" "$REPO_DIR/templates/mbusd@.service" > /tmp/mbusd@.service
-        install -m 0644 /tmp/mbusd@.service "$SYSTEMD_TEMPLATE"
+        tmp="$(mktemp)"
+        sed "s#/usr/local/bin/mbusd#$MBUSD_BIN#g" "$REPO_DIR/templates/mbusd@.service" > "$tmp"
+        install -m 0644 "$tmp" "$SYSTEMD_TEMPLATE"
+        rm -f "$tmp"
         return
       fi
     fi
@@ -117,13 +119,14 @@ detect_adapters() {
 
   local i=1
   for dev in "${ADAPTERS[@]}"; do
-    local target tty info serial vendor model
+    local target tty serial vendor model udev_props
     target="$(readlink -f "$dev")"
     tty="$(basename "$target")"
 
-    serial="$(udevadm info -q property -n "$target" | awk -F= '$1=="ID_SERIAL_SHORT"{print $2}')"
-    vendor="$(udevadm info -q property -n "$target" | awk -F= '$1=="ID_VENDOR_ID"{print $2}')"
-    model="$(udevadm info -q property -n "$target" | awk -F= '$1=="ID_MODEL_ID"{print $2}')"
+    udev_props="$(udevadm info -q property -n "$target")"
+    serial="$(echo "$udev_props" | awk -F= '$1=="ID_SERIAL_SHORT"{print $2}')"
+    vendor="$(echo "$udev_props" | awk -F= '$1=="ID_VENDOR_ID"{print $2}')"
+    model="$(echo "$udev_props" | awk -F= '$1=="ID_MODEL_ID"{print $2}')"
 
     printf "  [%d] %s -> %s" "$i" "$(basename "$dev")" "$tty"
     [[ -n "$vendor" || -n "$model" ]] && printf "  [%s:%s]" "$vendor" "$model"
@@ -141,9 +144,11 @@ detect_adapters() {
   fi
 
   SELECTED_DEV="$(readlink -f "${ADAPTERS[$((choice-1))]}")"
-  SELECTED_SERIAL="$(udevadm info -q property -n "$SELECTED_DEV" | awk -F= '$1=="ID_SERIAL_SHORT"{print $2}')"
-  SELECTED_VENDOR="$(udevadm info -q property -n "$SELECTED_DEV" | awk -F= '$1=="ID_VENDOR_ID"{print $2}')"
-  SELECTED_MODEL="$(udevadm info -q property -n "$SELECTED_DEV" | awk -F= '$1=="ID_MODEL_ID"{print $2}')"
+  local selected_props
+  selected_props="$(udevadm info -q property -n "$SELECTED_DEV")"
+  SELECTED_SERIAL="$(echo "$selected_props" | awk -F= '$1=="ID_SERIAL_SHORT"{print $2}')"
+  SELECTED_VENDOR="$(echo "$selected_props" | awk -F= '$1=="ID_VENDOR_ID"{print $2}')"
+  SELECTED_MODEL="$(echo "$selected_props" | awk -F= '$1=="ID_MODEL_ID"{print $2}')"
 
   if [[ -z "$SELECTED_VENDOR" || -z "$SELECTED_MODEL" ]]; then
     echo "Vendor/Product konnte nicht gelesen werden."
@@ -155,6 +160,14 @@ detect_adapters() {
     echo "Regel wird nur über Vendor/Product erstellt und ist nicht eindeutig, falls mehrere gleiche Adapter stecken."
     read -r -p "Trotzdem fortfahren? [y/N] " ans
     [[ "$ans" =~ ^[YyJj]$ ]] || exit 1
+  fi
+}
+
+validate_uint() {
+  local val="$1" label="$2" min="${3:-1}" max="${4:-65535}"
+  if ! [[ "$val" =~ ^[0-9]+$ ]] || (( val < min || val > max )); then
+    echo "Ungültiger Wert für ${label}: '${val}' (erwartet: ganze Zahl ${min}–${max})"
+    exit 1
   fi
 }
 
@@ -170,7 +183,7 @@ ask_config() {
   default_w="$(yaml_get "$PROFILE" mbusd.response_timeout_ms 2>/dev/null || echo 500)"
 
   echo
-  read -r -p "Gateway-Name [/dev/${default_name}]: " GATEWAY_NAME
+  read -r -p "Gateway-Name [${default_name}]: " GATEWAY_NAME
   GATEWAY_NAME="${GATEWAY_NAME:-$default_name}"
 
   if ! [[ "$GATEWAY_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
@@ -180,21 +193,40 @@ ask_config() {
 
   read -r -p "Modbus TCP-Port [${default_port}]: " TCP_PORT
   TCP_PORT="${TCP_PORT:-$default_port}"
+  validate_uint "$TCP_PORT" "TCP-Port" 1 65535
+
+  if [[ -d "$CONFIG_DIR" ]]; then
+    for existing_env in "$CONFIG_DIR"/*.env; do
+      [[ -e "$existing_env" ]] || continue
+      local existing_port
+      existing_port="$(grep -E '^TCP_PORT=' "$existing_env" | cut -d= -f2)"
+      if [[ "$existing_port" == "$TCP_PORT" ]]; then
+        echo "Warnung: Port ${TCP_PORT} wird bereits von $(basename "$existing_env" .env) verwendet."
+        read -r -p "Trotzdem fortfahren? [y/N] " ans
+        [[ "$ans" =~ ^[YyJj]$ ]] || exit 1
+        break
+      fi
+    done
+  fi
 
   read -r -p "Baudrate [${default_baud}]: " BAUDRATE
   BAUDRATE="${BAUDRATE:-$default_baud}"
+  validate_uint "$BAUDRATE" "Baudrate" 1 4000000
 
   read -r -p "Mode [${default_mode}]: " MODE
   MODE="${MODE:-$default_mode}"
 
   read -r -p "Verbosity [${default_v}]: " VERBOSITY
   VERBOSITY="${VERBOSITY:-$default_v}"
+  validate_uint "$VERBOSITY" "Verbosity" 0 9
 
   read -r -p "Slave timeout -R ms [${default_r}]: " SLAVE_TIMEOUT_MS
   SLAVE_TIMEOUT_MS="${SLAVE_TIMEOUT_MS:-$default_r}"
+  validate_uint "$SLAVE_TIMEOUT_MS" "Slave-Timeout" 1 60000
 
   read -r -p "Response timeout -W ms [${default_w}]: " RESPONSE_TIMEOUT_MS
   RESPONSE_TIMEOUT_MS="${RESPONSE_TIMEOUT_MS:-$default_w}"
+  validate_uint "$RESPONSE_TIMEOUT_MS" "Response-Timeout" 1 60000
 }
 
 write_files() {
@@ -238,8 +270,7 @@ reload_and_start() {
   systemctl daemon-reload
   udevadm control --reload-rules
   udevadm trigger
-
-  sleep 1
+  udevadm settle --timeout=5
 
   if [[ ! -e "/dev/${GATEWAY_NAME}" ]]; then
     echo

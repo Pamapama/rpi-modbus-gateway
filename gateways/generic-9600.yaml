@@ -9,4 +9,3 @@ mbusd:
   verbosity: 2
   slave_timeout_ms: 100
   response_timeout_ms: 500
-usb: {}
