@@ -1,0 +1,12 @@
+id: generic-115200
+description: Generisches RS485 Gateway 115200 8N1
+defaults:
+  gateway_name: rs485fast
+mbusd:
+  tcp_port: 503
+  baudrate: 115200
+  mode: 8N1
+  verbosity: 2
+  slave_timeout_ms: 100
+  response_timeout_ms: 500
+usb: {}

@@ -1,0 +1,14 @@
+id: goodwe
+description: GoodWe Wechselrichter RS485
+defaults:
+  gateway_name: goodwe485
+mbusd:
+  tcp_port: 502
+  baudrate: 9600
+  mode: 8N1
+  verbosity: 2
+  slave_timeout_ms: 100
+  response_timeout_ms: 500
+usb:
+  vendor_id: "0403"
+  product_id: "6001"
