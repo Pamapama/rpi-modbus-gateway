@@ -28,43 +28,43 @@ install_dependencies() {
   need_cmd udevadm
   need_cmd python3
 
-  if ! command -v mbusd >/dev/null 2>&1 && [[ ! -x /usr/local/bin/mbusd ]]; then
+  if ! command -v mbusd >/dev/null 2>&1 && [[ ! -x /usr/bin/mbusd ]]; then
     echo "mbusd wurde nicht gefunden."
 
-    if command -v apt-get >/dev/null 2>&1; then
-      read -r -p "Soll versucht werden, mbusd per apt zu installieren? [Y/n] " ans
-      ans="${ans:-Y}"
-      if [[ "$ans" =~ ^[YyJj]$ ]]; then
-        apt-get update
-        apt-get install -y mbusd || {
-          echo "apt konnte mbusd nicht installieren."
-          echo "Installiere mbusd manuell nach /usr/local/bin/mbusd und starte den Installer erneut."
-          exit 1
-        }
-      else
-        echo "Abbruch. Installiere mbusd zuerst."
-        exit 1
-      fi
-    else
-      echo "Kein apt-get vorhanden. Installiere mbusd manuell."
+    if ! command -v apt-get >/dev/null 2>&1; then
+      echo "Kein apt-get vorhanden. Installiere mbusd manuell nach /usr/local/bin/mbusd und starte den Installer erneut."
       exit 1
     fi
-  fi
 
-  if [[ ! -x /usr/local/bin/mbusd ]] && command -v mbusd >/dev/null 2>&1; then
-    MBUSD_BIN="$(command -v mbusd)"
-    echo "mbusd gefunden: $MBUSD_BIN"
-    if [[ "$MBUSD_BIN" != "/usr/local/bin/mbusd" ]]; then
-      read -r -p "Systemd-Template auf $MBUSD_BIN anpassen? [Y/n] " ans
-      ans="${ans:-Y}"
-      if [[ "$ans" =~ ^[YyJj]$ ]]; then
-        tmp="$(mktemp)"
-        sed "s#/usr/local/bin/mbusd#$MBUSD_BIN#g" "$REPO_DIR/templates/mbusd@.service" > "$tmp"
-        install -m 0644 "$tmp" "$SYSTEMD_TEMPLATE"
-        rm -f "$tmp"
-        return
-      fi
+    read -r -p "mbusd jetzt aus dem Quellcode bauen und installieren? [Y/n] " ans
+    ans="${ans:-Y}"
+    if ! [[ "$ans" =~ ^[YyJj]$ ]]; then
+      echo "Abbruch. Installiere mbusd manuell und starte den Installer erneut."
+      exit 1
     fi
+
+    echo "Installiere Build-Abhängigkeiten (cmake, build-essential)..."
+    apt-get update -qq
+    apt-get install -y cmake build-essential
+
+    local build_dir
+    build_dir="$(mktemp -d)"
+    echo "Klone mbusd nach $build_dir ..."
+    git clone --depth=1 https://github.com/3cky/mbusd.git "$build_dir/mbusd"
+
+    echo "Baue mbusd..."
+    cmake -S "$build_dir/mbusd" -B "$build_dir/mbusd/build" -DCMAKE_INSTALL_PREFIX=/usr/local
+    cmake --build "$build_dir/mbusd/build" --parallel
+    cmake --install "$build_dir/mbusd/build"
+
+    rm -rf "$build_dir"
+
+    if [[ ! -x /usr/bin/mbusd ]]; then
+      echo "Build fehlgeschlagen. Installiere mbusd manuell nach /usr/local/bin/mbusd."
+      exit 1
+    fi
+
+    echo "mbusd erfolgreich installiert: $(/usr/bin/mbusd -v 2>&1 | head -1 || true)"
   fi
 
   install -m 0644 "$REPO_DIR/templates/mbusd@.service" "$SYSTEMD_TEMPLATE"
@@ -119,7 +119,7 @@ detect_adapters() {
 
   local i=1
   for dev in "${ADAPTERS[@]}"; do
-    local target tty serial vendor model udev_props
+    local target tty serial vendor model udev_props existing_rule existing_name
     target="$(readlink -f "$dev")"
     tty="$(basename "$target")"
 
@@ -128,9 +128,21 @@ detect_adapters() {
     vendor="$(echo "$udev_props" | awk -F= '$1=="ID_VENDOR_ID"{print $2}')"
     model="$(echo "$udev_props" | awk -F= '$1=="ID_MODEL_ID"{print $2}')"
 
+    # Vorhandene udev-Regel suchen
+    existing_name=""
+    if [[ -f "$UDEV_RULES" ]]; then
+      if [[ -n "$serial" ]]; then
+        existing_rule="$(grep "ID_VENDOR_ID.*${vendor}.*ID_MODEL_ID.*${model}.*ID_SERIAL_SHORT.*${serial}" "$UDEV_RULES" || true)"
+      else
+        existing_rule="$(grep "ID_VENDOR_ID.*${vendor}.*ID_MODEL_ID.*${model}" "$UDEV_RULES" || true)"
+      fi
+      [[ -n "$existing_rule" ]] && existing_name="$(echo "$existing_rule" | grep -o 'SYMLINK+="[^"]*"' | cut -d'"' -f2)"
+    fi
+
     printf "  [%d] %s -> %s" "$i" "$(basename "$dev")" "$tty"
     [[ -n "$vendor" || -n "$model" ]] && printf "  [%s:%s]" "$vendor" "$model"
     [[ -n "$serial" ]] && printf " serial=%s" "$serial"
+    [[ -n "$existing_name" ]] && printf "  (bereits als /dev/%s registriert)" "$existing_name"
     echo
     ((i++))
   done
@@ -153,6 +165,36 @@ detect_adapters() {
   if [[ -z "$SELECTED_VENDOR" || -z "$SELECTED_MODEL" ]]; then
     echo "Vendor/Product konnte nicht gelesen werden."
     exit 1
+  fi
+
+  # Prüfen ob dieser Adapter bereits eine udev-Regel hat
+  if [[ -f "$UDEV_RULES" ]]; then
+    local existing_rule existing_name
+    if [[ -n "$SELECTED_SERIAL" ]]; then
+      existing_rule="$(grep "ID_VENDOR_ID.*${SELECTED_VENDOR}.*ID_MODEL_ID.*${SELECTED_MODEL}.*ID_SERIAL_SHORT.*${SELECTED_SERIAL}" "$UDEV_RULES" || true)"
+    else
+      existing_rule="$(grep "ID_VENDOR_ID.*${SELECTED_VENDOR}.*ID_MODEL_ID.*${SELECTED_MODEL}" "$UDEV_RULES" || true)"
+    fi
+    if [[ -n "$existing_rule" ]]; then
+      existing_name="$(echo "$existing_rule" | grep -o 'SYMLINK+="[^"]*"' | cut -d'"' -f2)"
+      echo
+      echo "Dieser Adapter ist bereits als /dev/${existing_name} registriert:"
+      echo "  $existing_rule"
+      echo
+      read -r -p "Bestehende Regel ersetzen? [y/N] " ans
+      if [[ "$ans" =~ ^[YyJj]$ ]]; then
+        tmp="$(mktemp)"
+        grep -v "SYMLINK+=\"${existing_name}\"" "$UDEV_RULES" > "$tmp" || true
+        cat "$tmp" > "$UDEV_RULES"
+        rm -f "$tmp"
+        systemctl disable --now "mbusd@${existing_name}.service" 2>/dev/null || true
+        rm -f "$CONFIG_DIR/${existing_name}.env"
+        echo "Alte Regel und Konfiguration für '${existing_name}' entfernt."
+      else
+        echo "Abbruch."
+        exit 1
+      fi
+    fi
   fi
 
   if [[ -z "$SELECTED_SERIAL" ]]; then
@@ -183,50 +225,86 @@ ask_config() {
   default_w="$(yaml_get "$PROFILE" mbusd.response_timeout_ms 2>/dev/null || echo 500)"
 
   echo
-  read -r -p "Gateway-Name [${default_name}]: " GATEWAY_NAME
-  GATEWAY_NAME="${GATEWAY_NAME:-$default_name}"
+  echo "Profil-Defaults:"
+  echo "  Name=${default_name}  Port=${default_port}  Baud=${default_baud}  Mode=${default_mode}"
+  echo "  Verbosity=${default_v}  SlaveTimeout=${default_r}ms  ResponseTimeout=${default_w}ms"
+  echo
+  read -r -p "Alle Standardwerte übernehmen? [Y/n] " use_defaults
+  use_defaults="${use_defaults:-Y}"
 
+  if [[ "$use_defaults" =~ ^[YyJj]$ ]]; then
+    GATEWAY_NAME="$default_name"
+    TCP_PORT="$default_port"
+    BAUDRATE="$default_baud"
+    MODE="$default_mode"
+    VERBOSITY="$default_v"
+    SLAVE_TIMEOUT_MS="$default_r"
+    RESPONSE_TIMEOUT_MS="$default_w"
+  else
+    read -r -p "Gateway-Name [${default_name}]: " GATEWAY_NAME
+    GATEWAY_NAME="${GATEWAY_NAME:-$default_name}"
+
+    read -r -p "Modbus TCP-Port [${default_port}]: " TCP_PORT
+    TCP_PORT="${TCP_PORT:-$default_port}"
+
+    read -r -p "Baudrate [${default_baud}]: " BAUDRATE
+    BAUDRATE="${BAUDRATE:-$default_baud}"
+
+    read -r -p "Mode [${default_mode}]: " MODE
+    MODE="${MODE:-$default_mode}"
+
+    read -r -p "Verbosity [${default_v}]: " VERBOSITY
+    VERBOSITY="${VERBOSITY:-$default_v}"
+
+    read -r -p "Slave timeout -R ms [${default_r}]: " SLAVE_TIMEOUT_MS
+    SLAVE_TIMEOUT_MS="${SLAVE_TIMEOUT_MS:-$default_r}"
+
+    read -r -p "Response timeout -W ms [${default_w}]: " RESPONSE_TIMEOUT_MS
+    RESPONSE_TIMEOUT_MS="${RESPONSE_TIMEOUT_MS:-$default_w}"
+  fi
+
+  # Validate (immer, unabhängig vom Zweig)
   if ! [[ "$GATEWAY_NAME" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
     echo "Ungültiger Name. Erlaubt: Buchstaben, Zahlen, ., _, -"
     exit 1
   fi
+  validate_uint "$TCP_PORT"          "TCP-Port"        1 65535
+  validate_uint "$BAUDRATE"          "Baudrate"        1 4000000
+  validate_uint "$VERBOSITY"         "Verbosity"       0 9
+  validate_uint "$SLAVE_TIMEOUT_MS"  "Slave-Timeout"   1 60000
+  validate_uint "$RESPONSE_TIMEOUT_MS" "Response-Timeout" 1 60000
 
-  read -r -p "Modbus TCP-Port [${default_port}]: " TCP_PORT
-  TCP_PORT="${TCP_PORT:-$default_port}"
-  validate_uint "$TCP_PORT" "TCP-Port" 1 65535
-
+  # Port-Konflikt-Check
   if [[ -d "$CONFIG_DIR" ]]; then
+    local existing_env existing_port existing_gw
     for existing_env in "$CONFIG_DIR"/*.env; do
       [[ -e "$existing_env" ]] || continue
-      local existing_port
       existing_port="$(grep -E '^TCP_PORT=' "$existing_env" | cut -d= -f2)"
       if [[ "$existing_port" == "$TCP_PORT" ]]; then
-        echo "Warnung: Port ${TCP_PORT} wird bereits von $(basename "$existing_env" .env) verwendet."
-        read -r -p "Trotzdem fortfahren? [y/N] " ans
-        [[ "$ans" =~ ^[YyJj]$ ]] || exit 1
+        existing_gw="$(basename "$existing_env" .env)"
+        echo
+        echo "Port ${TCP_PORT} wird bereits von Gateway '${existing_gw}' verwendet."
+        read -r -p "Gateway '${existing_gw}' ersetzen (Dienst stoppen + Konfiguration löschen)? [y/N] " ans
+        if [[ "$ans" =~ ^[YyJj]$ ]]; then
+          systemctl disable --now "mbusd@${existing_gw}.service" 2>/dev/null || true
+          # udev-Regel entfernen
+          if [[ -f "$UDEV_RULES" ]]; then
+            local tmp
+            tmp="$(mktemp)"
+            grep -v "SYMLINK+=\"${existing_gw}\"" "$UDEV_RULES" > "$tmp" || true
+            cat "$tmp" > "$UDEV_RULES"
+            rm -f "$tmp"
+          fi
+          rm -f "$existing_env"
+          echo "Gateway '${existing_gw}' entfernt."
+        else
+          echo "Abbruch. Wähle einen anderen Port."
+          exit 1
+        fi
         break
       fi
     done
   fi
-
-  read -r -p "Baudrate [${default_baud}]: " BAUDRATE
-  BAUDRATE="${BAUDRATE:-$default_baud}"
-  validate_uint "$BAUDRATE" "Baudrate" 1 4000000
-
-  read -r -p "Mode [${default_mode}]: " MODE
-  MODE="${MODE:-$default_mode}"
-
-  read -r -p "Verbosity [${default_v}]: " VERBOSITY
-  VERBOSITY="${VERBOSITY:-$default_v}"
-  validate_uint "$VERBOSITY" "Verbosity" 0 9
-
-  read -r -p "Slave timeout -R ms [${default_r}]: " SLAVE_TIMEOUT_MS
-  SLAVE_TIMEOUT_MS="${SLAVE_TIMEOUT_MS:-$default_r}"
-  validate_uint "$SLAVE_TIMEOUT_MS" "Slave-Timeout" 1 60000
-
-  read -r -p "Response timeout -W ms [${default_w}]: " RESPONSE_TIMEOUT_MS
-  RESPONSE_TIMEOUT_MS="${RESPONSE_TIMEOUT_MS:-$default_w}"
-  validate_uint "$RESPONSE_TIMEOUT_MS" "Response-Timeout" 1 60000
 }
 
 write_files() {
@@ -270,7 +348,7 @@ reload_and_start() {
   systemctl daemon-reload
   udevadm control --reload-rules
   udevadm trigger
-  udevadm settle --timeout=5
+  udevadm settle --timeout=10 || true
 
   if [[ ! -e "/dev/${GATEWAY_NAME}" ]]; then
     echo

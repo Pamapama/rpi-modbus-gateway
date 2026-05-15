@@ -8,7 +8,7 @@ Wants=network-online.target
 [Service]
 Type=forking
 EnvironmentFile=/etc/rpi-modbus-gateway/%i.env
-ExecStart=/usr/local/bin/mbusd -P ${TCP_PORT} -p /dev/%i -s ${BAUDRATE} -m ${MODE} -v ${VERBOSITY} -R ${SLAVE_TIMEOUT_MS} -W ${RESPONSE_TIMEOUT_MS}
+ExecStart=/usr/bin/mbusd -P ${TCP_PORT} -p /dev/%i -s ${BAUDRATE} -m ${MODE} -v ${VERBOSITY} -R ${SLAVE_TIMEOUT_MS} -W ${RESPONSE_TIMEOUT_MS}
 Restart=always
 RestartSec=2
 
